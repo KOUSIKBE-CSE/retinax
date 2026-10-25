@@ -1,0 +1,150 @@
+"""RetinaX research UI. Run with: streamlit run app.py"""
+import sys
+from pathlib import Path
+
+import numpy as np
+import streamlit as st
+import torch
+from PIL import Image
+
+ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT / "src"))
+from retinax import CLASS_NAMES
+from retinax.data.classification_dataset import transforms_for
+from retinax.models import BaselineCNN, CNNLSTM, CNNLSTMMoE
+from retinax.explainability.gradcam import GradCAM, overlay
+from retinax.models import AttentionUNet
+
+st.set_page_config(page_title="RetinaX", page_icon="◉", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+:root { --ink:#e9f2f4; --panel:#101c29; --panel2:#132638; --line:#263d4e; --cyan:#5de1db; --coral:#ff8066; --muted:#8ba3b1; --bg:#07111c; }
+.stApp { background:radial-gradient(circle at 80% 0%,#112b3b 0,#07111c 34%); color:var(--ink); font-family:'DM Sans',sans-serif; }
+[data-testid="stSidebar"] { background:#091723; border-right:1px solid var(--line); }
+h1,h2,h3 { font-family:'Space Grotesk',sans-serif !important; letter-spacing:-.045em; color:var(--ink) !important; }
+h1 { font-size:4rem !important; line-height:1 !important; margin-bottom:.65rem !important; }
+.eyebrow { color:#ff5f5f; font-size:.7rem; font-weight:700; letter-spacing:.16em; text-transform:uppercase; margin-bottom:1rem; }
+.lede { color:var(--muted); font-size:1.08rem; line-height:1.65; max-width:650px; }
+.panel { background:rgba(16,28,41,.88); border:1px solid var(--line); border-radius:16px; padding:1.35rem; box-shadow:0 18px 45px rgba(0,0,0,.2); }
+.metric { font-family:'Space Grotesk'; font-size:2.7rem; color:var(--cyan); }
+.muted { color:var(--muted); font-size:.88rem; }
+.warning { color:#ffd8bf; background:#38251f; border:1px solid #704638; border-radius:10px; padding:.8rem 1rem; font-size:.9rem; }
+div.stButton > button { background:var(--cyan); color:#061819; border:0; border-radius:9px; font-weight:700; padding:.7rem 1rem; }
+div.stButton > button:hover { background:#a2fff2; color:#061819; }
+[data-testid="stFileUploader"] { background:var(--panel2); border:1px dashed #49687a; border-radius:12px; padding:.5rem; }
+[data-testid="stFileUploaderDropzone"] { background:transparent; }
+[data-testid="stFileUploader"] { margin-top:1.1rem; margin-bottom:1.25rem; }
+[data-testid="stAlert"] { margin-top:1.25rem; border-radius:12px; }
+.panel + div { margin-top:1.1rem; }
+</style>
+""", unsafe_allow_html=True)
+
+@st.cache_resource
+def load_model(name, checkpoint):
+    model = {'Baseline CNN': BaselineCNN, 'CNN–LSTM': CNNLSTM, 'CNN–LSTM + MoE': CNNLSTMMoE}[name]()
+    if checkpoint:
+        checkpoint_path = Path(checkpoint).expanduser()
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = ROOT / checkpoint_path
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}. Train a model first or leave the field blank for preview mode.")
+        state = torch.load(checkpoint_path, map_location="cpu")
+        model.load_state_dict(state.get("model", state))
+    model.eval()
+    return model
+
+def analyse(model, image):
+    x = transforms_for(False)(image).unsqueeze(0)
+    with torch.no_grad():
+        logits = model(x); probs = torch.softmax(logits, dim=1)[0].numpy()
+    order = np.argsort(probs)[::-1]
+    return probs, order
+
+def explain_prediction(model, image):
+    """Create a Grad-CAM overlay from the final convolutional feature block."""
+    tensor = transforms_for(False)(image).unsqueeze(0)
+    target_layer = model.features[-1]
+    cam = GradCAM(model, target_layer)
+    logits, heatmap = cam(tensor)
+    heat = heatmap[0].cpu().numpy()
+    return overlay(image, heat), int(logits.argmax(1).item())
+
+with st.sidebar:
+    st.markdown("## ◉ RetinaX")
+    st.caption("Explainable retinal intelligence")
+    st.divider()
+    model_name = st.selectbox("Classification model", ["Baseline CNN", "CNN–LSTM", "CNN–LSTM + MoE"])
+    checkpoint = st.text_input("Classification checkpoint", value="checkpoints/retinax_baseline.pt")
+    segmentation_checkpoint = st.text_input("Segmentation checkpoint", value="checkpoints/retinax_unet_ma.pt")
+    st.divider()
+    st.markdown("**Research console**")
+    st.caption("Classification, explainability, and lesion mapping in one workspace.")
+    st.caption("RetinaX is for research only—not clinical diagnosis.")
+
+st.markdown('<div class="eyebrow">RetinaX / AI analysis console</div>', unsafe_allow_html=True)
+st.title("See what the model sees.")
+st.markdown('<p class="lede">Upload a fundus photograph and explore how RetinaX classifies disease severity. The workflow is designed to make results easy to inspect—not easy to over-trust.</p>', unsafe_allow_html=True)
+st.write("")
+
+upload, guide = st.columns([1.25, .75], gap="large")
+with upload:
+    st.markdown('<div class="panel"><div class="eyebrow">01 / Image</div><h3>Place an image on the desk</h3><p class="muted">Use a clear JPG or PNG retinal image. The image remains local to this session.</p>', unsafe_allow_html=True)
+    image_file = st.file_uploader("Drop a fundus image here", type=["jpg", "jpeg", "png"])
+    if image_file:
+        image = Image.open(image_file).convert("RGB")
+        st.image(image, caption="Uploaded fundus image", use_container_width=True)
+        run = st.button("Analyse image", use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.info("Start by uploading a JPG or PNG above. Your result workspace will appear here.")
+        st.markdown('</div>', unsafe_allow_html=True)
+with guide:
+    st.markdown('<div class="panel"><div class="eyebrow">02 / Readout</div>', unsafe_allow_html=True)
+    st.markdown("### A measured readout")
+    st.markdown("**Severity**  \nOne of five research labels.\n\n**Confidence**  \nThe model’s probability distribution—not certainty.\n\n**Explanation**  \nGrad-CAM when a compatible checkpoint is supplied.\n\n**Lesion map**  \nAvailable after training with pixel-level masks.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+if image_file and run:
+    try:
+        model = load_model(model_name, checkpoint or None)
+        probs, order = analyse(model, image)
+        top = int(order[0])
+        st.divider()
+        st.markdown('<div class="eyebrow">Analysis result</div>', unsafe_allow_html=True)
+        result, chart = st.columns([.8, 1.2], gap="large")
+        with result:
+            st.markdown(f"### {CLASS_NAMES[top]}")
+            st.markdown(f'<div class="metric">{probs[top]*100:.1f}%</div><div class="muted">model confidence</div>', unsafe_allow_html=True)
+            st.write("")
+            if not checkpoint:
+                st.markdown('<div class="warning">No checkpoint loaded. This is an untrained model preview; the prediction has no clinical meaning.</div>', unsafe_allow_html=True)
+        with chart:
+            st.markdown("### Confidence by class")
+            st.bar_chart({"confidence": {CLASS_NAMES[i]: float(probs[i]) for i in range(5)}}, height=250)
+        st.divider()
+        exp, seg = st.columns(2, gap="large")
+        with exp:
+            st.markdown("### Visual explanation")
+            try:
+                heatmap_image, cam_class = explain_prediction(model, image)
+                st.image(heatmap_image, caption=f"Grad-CAM overlay · {CLASS_NAMES[cam_class]}", use_container_width=True)
+                if not checkpoint:
+                    st.warning("This heatmap comes from an untrained preview model and has no clinical meaning.")
+                else:
+                    st.caption("Warmer regions indicate areas that influenced the model output more strongly.")
+            except Exception as cam_error:
+                st.info(f"Grad-CAM is unavailable for this model: {cam_error}")
+        with seg:
+            st.markdown("### Lesion localization")
+            if segmentation_checkpoint:
+                try:
+                    seg_path=Path(segmentation_checkpoint).expanduser(); seg_path=seg_path if seg_path.is_absolute() else ROOT/seg_path
+                    seg_model=AttentionUNet(); seg_model.load_state_dict(torch.load(seg_path,map_location='cpu').get('model',torch.load(seg_path,map_location='cpu'))); seg_model.eval()
+                    with torch.no_grad(): mask=torch.sigmoid(seg_model(transforms_for(False)(image).unsqueeze(0)))[0,0].numpy()
+                    st.image((mask>.5).astype(np.uint8)*255,caption='Predicted lesion mask',use_container_width=True)
+                except Exception as seg_error: st.warning(f"Segmentation unavailable: {seg_error}")
+            else: st.info("No segmentation checkpoint loaded. Attention U-Net requires paired lesion masks.")
+    except Exception as exc:
+        st.error(f"Could not analyse this image: {exc}")
