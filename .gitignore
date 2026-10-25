@@ -6,7 +6,7 @@ venv/
 .pytest_cache/
 results/*
 !results/.gitkeep
-data/
+/data/
 checkpoints/
 demo_data/
 *.egg-info/
