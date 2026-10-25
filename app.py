@@ -94,13 +94,35 @@ with st.sidebar:
         "CNN–LSTM": "checkpoints/retinax_cnn_lstm.pt",
         "CNN–LSTM + MoE": "checkpoints/retinax_moe.pt",
     }
-    checkpoint = st.text_input(
+    classification_options = ["(none / preview mode)"]
+    selected_default = checkpoint_defaults[model_name]
+    if (ROOT / selected_default).exists():
+        classification_options.append(selected_default)
+    checkpoint = st.selectbox(
         "Classification checkpoint",
-        value=checkpoint_defaults[model_name],
+        classification_options,
+        index=classification_options.index(selected_default) if selected_default in classification_options else 0,
         key=f"classification_checkpoint_{model_name}",
-        help="Use the checkpoint produced by the training command for the selected model.",
+        help="Select the checkpoint produced by the training command for the selected model.",
     )
-    segmentation_checkpoint = st.text_input("Segmentation checkpoint", value="checkpoints/retinax_unet_ma.pt")
+    checkpoint = None if checkpoint == "(none / preview mode)" else checkpoint
+
+    segmentation_options = ["(none / disable lesion map)"]
+    for lesion_checkpoint in (
+        "checkpoints/retinax_unet_ma.pt",
+        "checkpoints/retinax_unet_he.pt",
+        "checkpoints/retinax_unet_ex.pt",
+        "checkpoints/retinax_unet_se.pt",
+    ):
+        if (ROOT / lesion_checkpoint).exists():
+            segmentation_options.append(lesion_checkpoint)
+    segmentation_checkpoint = st.selectbox(
+        "Segmentation checkpoint",
+        segmentation_options,
+        index=1 if len(segmentation_options) > 1 else 0,
+        help="Select a trained lesion checkpoint: MA, HE, EX, or SE.",
+    )
+    segmentation_checkpoint = None if segmentation_checkpoint == "(none / disable lesion map)" else segmentation_checkpoint
     st.divider()
     st.markdown("**Research console**")
     st.caption("Classification, explainability, and lesion mapping in one workspace.")
